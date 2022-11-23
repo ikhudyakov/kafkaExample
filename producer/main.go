@@ -1,91 +1,57 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"encoding/gob"
 	"fmt"
 	"log"
 	"os"
 	"time"
 
-	"github.com/Shopify/sarama"
+	"github.com/segmentio/kafka-go"
 )
 
 var Address = []string{"localhost:9092"}
 
+type Message struct {
+	Text (string)
+}
+
 func main() {
-	syncProducer(Address)
-	asyncProducer(Address)
+	producer(Address)
 }
 
-// синхронный режим сообщений
-func syncProducer(address []string) {
-	config := sarama.NewConfig()
-	config.Producer.Return.Successes = true
-	config.Producer.Timeout = 5 * time.Second
-
-	p, err := sarama.NewSyncProducer(address, config)
-	if err != nil {
-		fmt.Println(err)
-		return
+func producer(address []string) {
+	conf := kafka.WriterConfig{
+		Brokers: []string{"localhost:9092"},
+		Topic:   "test",
 	}
-	defer p.Close()
 
-	topic := "test"
-	srcValue := "sync: this is a message.  index = %d  time: %s"
+	writer := kafka.NewWriter(conf)
+	srcValue := "sync: this is a message. index = %d  time: %s"
+
 	for i := 0; i < 10; i++ {
+		var buf bytes.Buffer
+		enc := gob.NewEncoder(&buf)
 		value := fmt.Sprintf(srcValue, i, time.Now().Format("15:04:05"))
-		msg := &sarama.ProducerMessage{
-			Topic: topic,
-			Value: sarama.ByteEncoder(value),
-		}
-		part, offset, err := p.SendMessage(msg)
+		err := enc.Encode(&Message{Text: value})
 		if err != nil {
-			log.Printf("send message(%s) err=%s \n", value, err)
+			log.Fatal(err)
+		}
+
+		err = writer.WriteMessages(context.Background(),
+			kafka.Message{Value: buf.Bytes()},
+		)
+		if err != nil {
+			log.Fatal(err)
 		} else {
-			fmt.Fprintf(os.Stdout, "%s Успешно отправлено, part = %d, offset = %d \n", value, part, offset)
+			fmt.Fprintf(os.Stdout, "%s Успешно отправлено\n", value)
 		}
 		time.Sleep(2 * time.Second)
 	}
-}
 
-// асинхронный режим сообщений
-func asyncProducer(address []string) {
-
-	config := sarama.NewConfig()
-	config.Producer.RequiredAcks = sarama.WaitForAll
-	config.Producer.Partitioner = sarama.NewRandomPartitioner
-	config.Producer.Return.Successes = true
-	config.Producer.Return.Errors = true
-
-	producer, err := sarama.NewAsyncProducer(address, config)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	defer producer.AsyncClose()
-
-	go func(p sarama.AsyncProducer) {
-		for {
-			select {
-			case suc := <-p.Successes():
-				fmt.Fprintf(os.Stdout, "%s Успешно отправлено, part = %d, offset = %d \n", suc.Value, suc.Partition, suc.Offset)
-			case fail := <-p.Errors():
-				fmt.Println("err: ", fail.Err)
-			}
-		}
-	}(producer)
-
-	var value string
-	for i := 0; ; i++ {
-		time.Sleep(500 * time.Millisecond)
-		value = fmt.Sprintf("async: this is a message.  index = %d  time: %s", i, time.Now().Format("15:04:05"))
-
-		msg := &sarama.ProducerMessage{
-			Topic: "test",
-		}
-
-		msg.Value = sarama.ByteEncoder(value)
-
-		producer.Input() <- msg
-		time.Sleep(2 * time.Second)
+	if err := writer.Close(); err != nil {
+		log.Fatal(err)
 	}
 }
